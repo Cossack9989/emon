@@ -6,7 +6,24 @@ from hexdump import hexdump
 from logger import logger
 
 
-# def hook_shm_msg()
+def hook_fifo_msg(pids: list, debug=False):
+
+    bpf_text = """
+#include <uapi/linux/un.h>
+#include <uapi/linux/ptrace.h>
+#include <bcc/proto.h>
+#include <linux/fs.h>
+#include <linux/aio.h>
+#include <linux/net.h>
+#include <linux/mount.h>
+#include <linux/sched.h>
+#include <linux/socket.h>
+#include <linux/module.h>
+#include <linux/version.h>
+#include <net/sock.h>
+
+    """
+    return
 
 
 def hook_uds_msg(pids: list, debug=False):
@@ -24,7 +41,7 @@ def hook_uds_msg(pids: list, debug=False):
         if os.path.exists(pth):
             pth += f" ({oct(os.stat(pth).st_mode)})"
         logger.info(f"LEN: {event.len}\tPATH: {pth}")
-        logger.info(f"PID: {event.src_pid}->{event.dst_pid}\tUID: {event.uid}\tGID: {event.gid}")
+        logger.info(f"PID: {event.src_pid}(uid={event.src_uid};gid={event.src_gid})->{event.dst_pid}(uid={event.dst_uid};gid={event.dst_gid})")
         pkt = b''
         for i in range(0, event.len):
             pkt += chr(event.pkt[i]).encode('latin-1')
@@ -58,9 +75,11 @@ def hook_uds_msg(pids: list, debug=False):
 struct uds_data_t {
     u32 len;
     u32 dst_pid;
+    u32 dst_uid;
+    u32 dst_gid;
     u32 src_pid;
-    u32 uid;
-    u32 gid;
+    u32 src_uid;
+    u32 src_gid;
     u8  pth[UNIX_PATH_MAX];
     u8  pkt[MAX_PKT];
 };
@@ -111,10 +130,16 @@ int trace_unix_stream_read_actor(struct pt_regs *ctx)
         bpf_probe_read(&path, UNIX_PATH_MAX, sock_path);
     }
 
-    data->dst_pid = (u32)skb->sk->sk_peer_pid->numbers[0].nr;
     data->src_pid = (u32)usk->peer->sk_peer_pid->numbers[0].nr;
-    data->uid = (u32)skb->sk->sk_peer_cred->uid.val;
-    data->gid = (u32)skb->sk->sk_peer_cred->gid.val;
+    data->src_uid = (u32)usk->peer->sk_peer_cred->uid.val;
+    data->src_gid = (u32)usk->peer->sk_peer_cred->gid.val;
+    data->dst_pid = (u32)skb->sk->sk_peer_pid->numbers[0].nr;
+    data->dst_uid = (u32)skb->sk->sk_peer_cred->uid.val;
+    data->dst_gid = (u32)skb->sk->sk_peer_cred->gid.val;
+
+    if (data->src_pid == data->dst_pid)
+        return 0;
+
     bpf_probe_read(&data->pth, UNIX_PATH_MAX, sock_path);
 
     u32 data_len = skb->len;
@@ -155,4 +180,4 @@ int trace_unix_stream_read_actor(struct pt_regs *ctx)
 
 if __name__ == "__main__":
     # hook_uds_msg([239123, 239384], debug=True)
-    hook_uds_msg([812, 823, 826, 835], debug=True)
+    hook_uds_msg([], debug=True)
