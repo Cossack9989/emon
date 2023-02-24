@@ -6,6 +6,8 @@ from bcc import BPF
 from hashlib import md5
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from logger import logger
+
 local_prog = '''
 static u16 local_strlen(u8 * data){
     u16 i = 0;
@@ -111,7 +113,7 @@ def execute_one_hook(bpf_progs, func):
                 (task, pid, cpu, flags, ts, msg) = b.trace_fields()
                 if msg == "":
                     continue
-                print("%-18.9f %-16s %-6d %s" % (ts, task.decode("latin-1"), pid, msg.decode("latin-1")))
+                logger.info("%-18.9f %-16s %-6d %s" % (ts, task.decode("latin-1"), pid, msg.decode("latin-1")))
             except ValueError as e:
                 print(e)
                 continue
@@ -120,7 +122,7 @@ def execute_one_hook(bpf_progs, func):
 
 
 def attach_hooks(executor, bpf_progs: dict):
-    print("%-18s %-16s %-6s %s" % ("TIME(s)", "COMM", "PID", "DATA"))
+    logger.info("%-18s %-16s %-6s %s" % ("TIME(s)", "COMM", "PID", "DATA"))
     procs = []
     for _func in bpf_progs.keys():
         procs.append(executor.submit(execute_one_hook, bpf_progs, _func))
