@@ -1,10 +1,12 @@
+import os
+
 from bcc import BPF
-from socket import inet_ntop, ntohs, AF_INET, AF_INET6
 from hexdump import hexdump
 
 from logger import logger
 
-import sys
+
+# def hook_shm_msg()
 
 
 def hook_uds_msg(pids: list, debug=False):
@@ -19,6 +21,8 @@ def hook_uds_msg(pids: list, debug=False):
             pth = '@' + pth
         else:
             pth = chr(event.pth[0]) + pth
+        if os.path.exists(pth):
+            pth += f" ({oct(os.stat(pth).st_mode)})"
         logger.info(f"LEN: {event.len}\tPATH: {pth}")
         logger.info(f"PID: {event.src_pid}->{event.dst_pid}\tUID: {event.uid}\tGID: {event.gid}")
         pkt = b''
@@ -151,4 +155,4 @@ int trace_unix_stream_read_actor(struct pt_regs *ctx)
 
 if __name__ == "__main__":
     # hook_uds_msg([239123, 239384], debug=True)
-    hook_uds_msg([], debug=True)
+    hook_uds_msg([812, 823, 826, 835], debug=True)
