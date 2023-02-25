@@ -6,23 +6,141 @@ from hexdump import hexdump
 from logger import logger
 
 
-def hook_fifo_msg(pids: list, debug=False):
+def hook_pipe_msg(pids: list, debug=False):
+
+    def print_pkg(cpu, data, size):
+        event = b["pipe_msg_events"].event(data)
+        typ = ''
+        if chr(event.typ) == 'I':
+            typ = 'IOVEC'
+        elif chr(event.typ) == 'K':
+            typ = 'KVEC'
+        else:
+            typ = 'UNK'
+        logger.info(f"pipe_write in {typ} by {event.pid} to inode:{event.ino}(uid={event.creator})")
+        pkt = b''
+        for i in range(0, event.len):
+            pkt += chr(event.pkt[i]).encode('latin-1')
+        # print(pkt)
+        for line in hexdump(pkt, result='return').split('\n'):
+            logger.success(line)
+
+    for pid in pids:
+        assert isinstance(pid, int), "malformed pid"
 
     bpf_text = """
 #include <uapi/linux/un.h>
+#include <uapi/linux/uio.h>
 #include <uapi/linux/ptrace.h>
 #include <bcc/proto.h>
 #include <linux/fs.h>
 #include <linux/aio.h>
+#include <linux/uio.h>
 #include <linux/net.h>
 #include <linux/mount.h>
 #include <linux/sched.h>
+#include <linux/namei.h>
+#include <linux/dcache.h>
 #include <linux/socket.h>
 #include <linux/module.h>
+#include <linux/minmax.h>
 #include <linux/version.h>
 #include <net/sock.h>
+#include <net/sch_generic.h>
 
+#define MAX_PKT  256
+
+struct pipe_data_t {
+    u32 len;
+    u32 pid;
+    u32 creator;
+    u32 ino;
+    u8 typ;
+    u8 pkt[MAX_PKT];
+};
+
+// single element per-cpu array to hold the current event off the stack
+BPF_PERCPU_ARRAY(pipe_data, struct pipe_data_t, 1);
+
+BPF_PERF_OUTPUT(pipe_msg_events);
+
+int trace_pipe_write(struct pt_regs *ctx){
+    u32 zero = 0;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = pid_tgid;
+
+    FILTER_PID
+
+    struct pipe_data_t *data = pipe_data.lookup(&zero);
+    if (!data)
+        return 0;
+
+    struct kiocb *iocb = (struct kiocb *)PT_REGS_PARM1(ctx);
+    if (!iocb)
+        return 0;
+    
+    struct iov_iter *from = (struct iov_iter *)PT_REGS_PARM2(ctx);
+    if (!from)
+        return 0;
+
+    struct file *curr_filp = iocb->ki_filp;
+    struct pipe_inode_info *curr_pipe = iocb->ki_filp->private_data;
+
+    if ((curr_filp->f_path.dentry->d_inode->i_mode & S_IFMT) != S_IFIFO)
+        return 0;
+
+    data->pid = pid;
+    data->creator = curr_pipe->user->uid.val;
+    data->ino = curr_filp->f_path.dentry->d_inode->i_ino;
+    // bpf_probe_read_kernel(data->pth, DNAME_INLINE_LEN, curr_filp->f_path.dentry->d_iname);
+
+    u32 len = from->count;
+    u32 off = from->iov_offset;
+    if (from->iter_type == ITER_IOVEC){
+        u32 cap = from->iov->iov_len;
+        u8 * src = (u8*)(from->iov->iov_base + off);
+        if (off + len > cap || len > MAX_PKT)
+            return 0;
+        bpf_probe_read(data->pkt, len, src);
+        data->len = len;
+        data->typ = 'I';
+        pipe_msg_events.perf_submit(ctx, data, sizeof(struct pipe_data_t));
+    }
+    else if (from->iter_type == ITER_KVEC){
+        u32 cap = from->kvec->iov_len;
+        u8 * src = (u8*)(from->kvec->iov_base + off);
+        if (off + len > cap || len > MAX_PKT)
+            return 0;
+        bpf_probe_read(data->pkt, len, src);
+        data->len = len;
+        data->typ = 'K';
+        pipe_msg_events.perf_submit(ctx, data, sizeof(struct pipe_data_t));
+    }
+
+    return 0;
+}
     """
+    if len(pids) >= 1:
+        first_if = '&&'.join([f"pid!={pid}" for pid in pids])
+        bpf_text = bpf_text.replace('FILTER_PID', f'if ({first_if}) return 0;')
+    else:
+        bpf_text = bpf_text.replace('FILTER_PID', '')
+    if debug:
+        print(bpf_text)
+
+    # initialize BPF
+    b = BPF(text=bpf_text)
+    b.attach_kprobe(event="pipe_write", fn_name="trace_pipe_write")
+    # read events
+    b["pipe_msg_events"].open_perf_buffer(print_pkg)
+    while True:
+        try:
+            b.perf_buffer_poll()
+        except KeyboardInterrupt:
+            b.detach_kprobe(event="pipe_write")
+            print("stop due to Ctrl-C")
+            return
     return
 
 
@@ -180,4 +298,4 @@ int trace_unix_stream_read_actor(struct pt_regs *ctx)
 
 if __name__ == "__main__":
     # hook_uds_msg([239123, 239384], debug=True)
-    hook_uds_msg([], debug=True)
+    hook_pipe_msg([], debug=True)
