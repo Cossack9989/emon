@@ -12,9 +12,15 @@ def hook_pipe_msg(pids: list, debug=False):
         event = b["pipe_msg_events"].event(data)
         typ = ''
         if chr(event.typ) == 'I':
-            typ = 'IOVEC'
+            typ = 'iovec'
         elif chr(event.typ) == 'K':
-            typ = 'KVEC'
+            typ = 'kvec'
+        elif chr(event.typ) == 'B':
+            typ = 'bio_vec'
+        elif chr(event.typ) == 'P':
+            typ = 'pipe_inode_info'
+        elif chr(event.typ) == 'X':
+            typ = 'xarray'
         else:
             typ = 'UNK'
         logger.info(f"pipe_write in {typ} by {event.pid} to inode:{event.ino}(uid={event.creator})")
@@ -28,6 +34,7 @@ def hook_pipe_msg(pids: list, debug=False):
     for pid in pids:
         assert isinstance(pid, int), "malformed pid"
 
+    # TODO: incomplete pipe msg? why?
     bpf_text = """
 #include <uapi/linux/un.h>
 #include <uapi/linux/uio.h>
@@ -105,7 +112,6 @@ int trace_pipe_write(struct pt_regs *ctx){
         bpf_probe_read(data->pkt, len, src);
         data->len = len;
         data->typ = 'I';
-        pipe_msg_events.perf_submit(ctx, data, sizeof(struct pipe_data_t));
     }
     else if (from->iter_type == ITER_KVEC){
         u32 cap = from->kvec->iov_len;
@@ -115,9 +121,21 @@ int trace_pipe_write(struct pt_regs *ctx){
         bpf_probe_read(data->pkt, len, src);
         data->len = len;
         data->typ = 'K';
-        pipe_msg_events.perf_submit(ctx, data, sizeof(struct pipe_data_t));
+        
     }
-
+    else if (from->iter_type == ITER_BVEC){
+        data->typ = 'B';
+        // TODO
+    }
+    else if (from->iter_type == ITER_PIPE){
+        data->typ = 'P';
+        // TODO
+    }
+    else if (from->iter_type == ITER_XARRAY){
+        data->typ = 'X';
+        // TODO
+    }
+    pipe_msg_events.perf_submit(ctx, data, sizeof(struct pipe_data_t));
     return 0;
 }
     """
